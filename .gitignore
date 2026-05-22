@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+apps/web/.next/
+apps/web/out/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+apps/api/.venv/
+apps/api/venv/
+apps/api/__pycache__/
+*.egg-info/
+dist/
+build/
+
+# Env files
+.env
+.env.local
+.env.production
+.env.staging
+apps/api/.env
+apps/web/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Misc
+.turbo/

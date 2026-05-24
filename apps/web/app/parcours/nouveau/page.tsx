@@ -116,25 +116,8 @@ export default function NouveauParcoursPage() {
     if (!parsed.success) return;
 
     setLoading(true);
-    try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/parcours/generate`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(parsed.data),
-          credentials: "include",
-        }
-      );
-      if (!res.ok) throw new Error();
-      const { parcours_id } = await res.json();
-      router.push(`/parcours/${parcours_id}`);
-    } catch {
-      setErrors({ symptoms: "Erreur lors de la génération. Réessayez." });
-      setStep(0);
-    } finally {
-      setLoading(false);
-    }
+    sessionStorage.setItem("parcours_pending", JSON.stringify(parsed.data));
+    router.push("/parcours/stream");
   }
 
   return (

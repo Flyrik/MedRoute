@@ -25,6 +25,7 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
 
@@ -32,23 +33,4 @@ jobs:
 
       - run: pnpm exec tsc --noEmit
 
-  backend:
-    name: Backend — lint & typecheck
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/api
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - run: pip install ruff mypy -r requirements.txt
-
-      - run: ruff check .
-
-      - run: mypy app --ignore-missing-imports
+  # backend job sera ajouté une fois apps/api créé

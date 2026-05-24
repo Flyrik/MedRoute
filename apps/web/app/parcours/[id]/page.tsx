@@ -155,7 +155,7 @@ function UrgenceAbsolue() {
         📞 Appeler le 15
       </a>
       <p className="text-red-200 text-sm mt-6">
-        Ou le <strong className="text-white">112</strong> depuis n'importe quel téléphone
+        Ou le <strong className="text-white">112</strong> depuis n&apos;importe quel téléphone
       </p>
     </div>
   );
@@ -192,7 +192,7 @@ export default function ParcoursPage() {
     timers.push(setTimeout(() => setPhase("done"), 900 + data.parcours.length * 500 + 800));
 
     return () => timers.forEach(clearTimeout);
-  }, []);
+  }, [data.parcours, data.urgence]);
 
   if (data.urgence === "absolu") return <UrgenceAbsolue />;
 
@@ -387,7 +387,7 @@ export default function ParcoursPage() {
               />
             </div>
             <p className="text-xs text-zinc-400 mt-1.5 text-center">
-              {Math.round((data.financier.secu / data.financier.cout_total) * 100)}% remboursé par l'Assurance Maladie
+              {Math.round((data.financier.secu / data.financier.cout_total) * 100)}% remboursé par l&apos;Assurance Maladie
             </p>
           </div>
         </section>

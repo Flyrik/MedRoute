@@ -148,7 +148,7 @@ export function useParcoursStream() {
         error: (err as Error).message ?? "Erreur inconnue.",
       }));
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   function applyEvent(type: string, data: Record<string, unknown>) {
     switch (type) {

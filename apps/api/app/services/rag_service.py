@@ -1,8 +1,5 @@
 import hashlib
-import json
 import logging
-import cohere
-from pinecone import Pinecone
 from ..config import settings
 from ..db.redis import get_redis
 
@@ -23,6 +20,13 @@ def _age_range(age: int) -> str:
 
 
 async def get_rag_context(symptoms: str, age: int, city: str) -> str:
+    if not settings.cohere_api_key or not settings.pinecone_api_key:
+        logger.info("RAG désactivé (Cohere/Pinecone non configurés)")
+        return ""
+
+    import cohere
+    from pinecone import Pinecone
+
     cache_key = _cache_key(symptoms, _age_range(age), city)
     redis = await get_redis()
 
@@ -30,29 +34,34 @@ async def get_rag_context(symptoms: str, age: int, city: str) -> str:
     if cached:
         return cached
 
-    co = cohere.Client(settings.cohere_api_key)
-    embed_response = co.embed(
-        texts=[symptoms],
-        model="embed-multilingual-v3.0",
-        input_type="search_query",
-    )
-    vector = embed_response.embeddings[0]
-
-    pc = Pinecone(api_key=settings.pinecone_api_key)
-    index = pc.Index(settings.pinecone_index_name)
-
-    chunks: list[str] = []
-    for ns in NAMESPACES:
-        results = index.query(
-            vector=vector,
-            top_k=TOP_K,
-            namespace=ns,
-            include_metadata=True,
+    try:
+        co = cohere.Client(settings.cohere_api_key)
+        embed_response = co.embed(
+            texts=[symptoms],
+            model="embed-multilingual-v3.0",
+            input_type="search_query",
         )
-        for match in results.matches:
-            if match.metadata and "text" in match.metadata:
-                chunks.append(match.metadata["text"])
+        vector = embed_response.embeddings[0]
 
-    context = "\n\n---\n\n".join(chunks)
-    await redis.setex(cache_key, settings.redis_cache_ttl, context)
-    return context
+        pc = Pinecone(api_key=settings.pinecone_api_key)
+        index = pc.Index(settings.pinecone_index_name)
+
+        chunks: list[str] = []
+        for ns in NAMESPACES:
+            results = index.query(
+                vector=vector,
+                top_k=TOP_K,
+                namespace=ns,
+                include_metadata=True,
+            )
+            for match in results.matches:
+                if match.metadata and "text" in match.metadata:
+                    chunks.append(match.metadata["text"])
+
+        context = "\n\n---\n\n".join(chunks)
+        await redis.setex(cache_key, settings.redis_cache_ttl, context)
+        return context
+
+    except Exception as e:
+        logger.error("rag_error", extra={"error": str(e)})
+        return ""

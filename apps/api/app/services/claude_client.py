@@ -1,6 +1,6 @@
 import logging
 from typing import AsyncIterator
-import anthropic
+import google.generativeai as genai
 from ..config import settings
 from ..models.symptom import SymptomInput
 
@@ -66,27 +66,37 @@ async def stream_parcours(
     input: SymptomInput,
     rag_context: str,
 ) -> AsyncIterator[str]:
-    """Streams complete NDJSON lines as Claude emits them."""
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    """Streams complete NDJSON lines as Gemini emits them."""
+    genai.configure(api_key=settings.gemini_api_key)
+    model = genai.GenerativeModel(
+        model_name=settings.gemini_model,
+        system_instruction=SYSTEM_PROMPT.format(
+            rag_context=rag_context or "Aucun contexte disponible."
+        ),
+    )
 
-    system = SYSTEM_PROMPT.format(rag_context=rag_context or "Aucun contexte disponible.")
+    user_prompt = _build_user_prompt(input)
 
     line_buffer = ""
-    async with client.messages.stream(
-        model=settings.claude_model,
-        max_tokens=4096,
-        system=system,
-        messages=[{"role": "user", "content": _build_user_prompt(input)}],
-    ) as stream:
-        async for chunk in stream.text_stream:
-            line_buffer += chunk
-            while "\n" in line_buffer:
-                line, line_buffer = line_buffer.split("\n", 1)
-                line = line.strip()
-                if line:
-                    yield line
+    response = await model.generate_content_async(
+        user_prompt,
+        stream=True,
+        generation_config=genai.GenerationConfig(
+            max_output_tokens=4096,
+            temperature=0.3,
+        ),
+    )
+
+    async for chunk in response:
+        text = chunk.text if hasattr(chunk, "text") and chunk.text else ""
+        line_buffer += text
+        while "\n" in line_buffer:
+            line, line_buffer = line_buffer.split("\n", 1)
+            line = line.strip()
+            if line:
+                yield line
 
     if line_buffer.strip():
         yield line_buffer.strip()
 
-    logger.info("claude_stream_complete")
+    logger.info("gemini_stream_complete")

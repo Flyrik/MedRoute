@@ -1,10 +1,8 @@
-import json
 import logging
 from typing import AsyncIterator
 import anthropic
 from ..config import settings
 from ..models.symptom import SymptomInput
-from ..models.parcours import ParcoursParse
 
 logger = logging.getLogger(__name__)
 
@@ -12,18 +10,38 @@ SYSTEM_PROMPT = """Tu es un assistant médical expert en orientation de patients
 
 RÈGLES ABSOLUES :
 1. Tu n'es pas un médecin et ne poses pas de diagnostic
-2. Si tu détectes des signes d'urgence vitale (douleur thoracique irradiant le bras, paralysie soudaine, difficulté respiratoire sévère, saignement abondant), tu dois UNIQUEMENT répondre avec urgence="absolu" et rien d'autre
-3. Tu réponds UNIQUEMENT en JSON valide, sans markdown, sans texte autour
+2. Si tu détectes des signes d'urgence vitale (douleur thoracique irradiant le bras, paralysie soudaine, difficulté respiratoire sévère, saignement abondant, perte de conscience), tu dois UNIQUEMENT émettre la ligne urgence_absolue et t'arrêter
+3. Tu réponds UNIQUEMENT avec des lignes JSON valides, rien d'autre
 4. Tu utilises EXCLUSIVEMENT le contexte médical fourni (sources HAS/Ameli)
 5. Tu t'exprimes en français, de manière claire et accessible pour un non-médecin
+6. N'utilise JAMAIS le mot "diagnostic"
 
-CONTEXTE MÉDICAL DISPONIBLE :
+FORMAT DE SORTIE — NDJSON STRICT (une ligne JSON complète par événement) :
+
+Si urgence vitale détectée, émettre UNIQUEMENT cette ligne puis s'arrêter :
+{"event":"urgence_absolue"}
+
+Sinon, émettre dans l'ordre :
+LIGNE 1 — hypothèses et niveau d'urgence :
+{"event":"hypotheses","hypotheses":[{"nom":"Nom pathologie","probabilite":0.65,"explication":"Description accessible","signes_alarme":["signe 1"]}],"urgence":"non_urgent","confidence":0.87}
+
+LIGNES 2..N — une étape par ligne (minimum 3 étapes) :
+{"event":"etape","index":0,"type_praticien":"Médecin généraliste","raison":"Motif de la consultation","delai_recommande_jours":2,"cout_estime_eur":30.0,"examens_associes":[],"optionnel":false}
+
+DERNIÈRE LIGNE :
+{"event":"complete","message_utilisateur":"Message rassurant en français simple","disclaimer":"MedRoute ne remplace pas un avis médical professionnel. Ces informations sont indicatives."}
+
+VALEURS AUTORISÉES :
+- urgence : "non_urgent" | "urgent" | "absolu"
+- confidence : float 0.0–1.0
+- delai_recommande_jours : entier (0 = immédiat, 1 = 24h, 7 = semaine, etc.)
+- cout_estime_eur : float en euros
+- probabilite : float 0.0–1.0 (somme des hypothèses ≈ 1.0)
+
+CONTEXTE MÉDICAL DISPONIBLE (sources HAS/Ameli) :
 {rag_context}
 
-FORMAT DE RÉPONSE OBLIGATOIRE :
-{json_schema}
-
-Analyse les symptômes suivants et génère un parcours de soin adapté."""
+Analyse les symptômes et génère le parcours de soin adapté."""
 
 
 def _build_user_prompt(input: SymptomInput) -> str:
@@ -39,6 +57,8 @@ def _build_user_prompt(input: SymptomInput) -> str:
         lines.append(f"Intensité (1-10) : {input.intensite}")
     if input.antecedents:
         lines.append(f"Antécédents : {', '.join(input.antecedents)}")
+    if input.mutuelle:
+        lines.append(f"Mutuelle : {input.mutuelle}")
     return "\n".join(lines)
 
 
@@ -46,15 +66,12 @@ async def stream_parcours(
     input: SymptomInput,
     rag_context: str,
 ) -> AsyncIterator[str]:
+    """Streams complete NDJSON lines as Claude emits them."""
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    json_schema = ParcoursParse.model_json_schema()
 
-    system = SYSTEM_PROMPT.format(
-        rag_context=rag_context,
-        json_schema=json.dumps(json_schema, ensure_ascii=False),
-    )
+    system = SYSTEM_PROMPT.format(rag_context=rag_context or "Aucun contexte disponible.")
 
-    buffer = ""
+    line_buffer = ""
     async with client.messages.stream(
         model=settings.claude_model,
         max_tokens=4096,
@@ -62,7 +79,14 @@ async def stream_parcours(
         messages=[{"role": "user", "content": _build_user_prompt(input)}],
     ) as stream:
         async for chunk in stream.text_stream:
-            buffer += chunk
-            yield chunk
+            line_buffer += chunk
+            while "\n" in line_buffer:
+                line, line_buffer = line_buffer.split("\n", 1)
+                line = line.strip()
+                if line:
+                    yield line
 
-    logger.info("claude_stream_complete", extra={"buffer_len": len(buffer)})
+    if line_buffer.strip():
+        yield line_buffer.strip()
+
+    logger.info("claude_stream_complete")

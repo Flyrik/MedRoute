@@ -1,6 +1,5 @@
 from ..models.parcours import Etape
 
-# Grille tarifaire sécu 2025 par type de praticien (tarif de base remboursable)
 TARIFS_SECU: dict[str, float] = {
     "Médecin généraliste": 26.50,
     "Cardiologue": 54.00,
@@ -16,11 +15,24 @@ TARIFS_SECU: dict[str, float] = {
     "Rhumatologue": 54.00,
     "Kinésithérapeute": 16.13,
     "Infirmier": 12.00,
-    "Biologiste": 0.0,   # remboursement variable selon les actes
-    "Radiologue": 0.0,   # remboursement variable selon les actes
+    "Biologiste": 0.0,
+    "Radiologue": 0.0,
 }
 
 TAUX_REMBOURSEMENT = 0.70
+
+
+def get_remboursement(type_praticien: str, cout: float) -> float:
+    """Returns estimated sécu reimbursement for a single étape."""
+    tp = type_praticien.lower()
+    tarif_base: float | None = None
+    for key, val in TARIFS_SECU.items():
+        if key.lower() in tp or tp in key.lower():
+            tarif_base = val
+            break
+    if tarif_base is None:
+        tarif_base = cout * 0.5
+    return round(min(tarif_base * TAUX_REMBOURSEMENT, cout), 2)
 
 
 def calculate_financier(etapes: list[Etape]) -> dict:

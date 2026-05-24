@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import uuid
@@ -8,7 +9,7 @@ from ..models.symptom import SymptomInput
 from ..models.parcours import EtapePatchRequest, ParcoursDB
 from ..services.claude_client import stream_parcours
 from ..services.rag_service import get_rag_context
-from ..services.financial_service import calculate_financier
+from ..services.financial_service import get_remboursement
 from ..db.supabase import get_supabase
 from ..db.redis import get_redis
 from ..config import settings
@@ -29,67 +30,129 @@ async def _check_rate_limit(user_id: str) -> None:
     await pipe.execute()
 
 
+def _format_delai(days: int) -> str:
+    if days <= 0:
+        return "Immédiatement"
+    if days == 1:
+        return "Dans les 24h"
+    if days <= 2:
+        return "Dans les 48h"
+    if days <= 7:
+        return "Dans la semaine"
+    if days <= 14:
+        return "Sous 2 semaines"
+    if days <= 30:
+        return "Sous 1 mois"
+    return f"Sous {days} jours"
+
+
+def _map_hypothese(h: dict) -> dict:
+    return {
+        "pathologie": h.get("nom", h.get("pathologie", "")),
+        "probabilite": h.get("probabilite", 0),
+        "description": h.get("explication", h.get("description", "")),
+        "alerte": bool(h.get("signes_alarme")) or h.get("alerte", False),
+    }
+
+
+def _map_etape(e: dict, remboursement: float) -> dict:
+    days = e.get("delai_recommande_jours")
+    delai = _format_delai(int(days)) if days is not None else e.get("delai", "")
+    return {
+        "index": e.get("index", 0),
+        "type_praticien": e.get("type_praticien", ""),
+        "motif": e.get("raison", e.get("motif", "")),
+        "delai": delai,
+        "cout_estime": e.get("cout_estime_eur", e.get("cout_estime", 0)),
+        "remboursement_secu": remboursement,
+    }
+
+
 async def _generate_sse(input: SymptomInput, user_id: str):
     rag_context = await get_rag_context(input.symptoms, input.age, input.city)
-    accumulated = ""
 
-    async for chunk in stream_parcours(input, rag_context):
-        accumulated += chunk
+    urgence = "non_urgent"
+    confidence = 1.0
+    hypotheses_display: list[dict] = []
+    etapes_display: list[dict] = []
 
-    try:
-        data = json.loads(accumulated)
-    except json.JSONDecodeError:
-        yield f"event: error\ndata: {json.dumps({'code': 'PARSE_ERROR', 'message': 'Erreur de génération'})}\n\n"
-        return
+    async for line in stream_parcours(input, rag_context):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning("ndjson_parse_error", extra={"line_preview": line[:120]})
+            continue
 
-    urgence = data.get("urgence", "non_urgent")
+        etype = event.get("event")
 
-    if urgence == "absolu":
-        yield f"event: urgence_absolue\ndata: {json.dumps({'message': 'Appelez le 15 immédiatement', 'numero': '15'})}\n\n"
-        return
+        if etype == "urgence_absolue":
+            yield f"event: urgence_absolue\ndata: {json.dumps({'message': 'Appelez le 15 immédiatement', 'numero': '15'})}\n\n"
+            return
 
-    confidence = data.get("confidence", 1.0)
-    if confidence < 0.60:
-        yield f"event: error\ndata: {json.dumps({'code': 'LOW_CONFIDENCE', 'message': 'Vos symptômes sont complexes, nous recommandons une consultation directe'})}\n\n"
-        return
+        elif etype == "hypotheses":
+            urgence = event.get("urgence", "non_urgent")
+            confidence = float(event.get("confidence", 1.0))
 
-    yield f"event: hypotheses\ndata: {json.dumps({'hypotheses': data.get('hypotheses', []), 'urgence': urgence, 'confidence': confidence}, ensure_ascii=False)}\n\n"
+            if confidence < 0.60:
+                yield f"event: error\ndata: {json.dumps({'code': 'LOW_CONFIDENCE', 'message': 'Vos symptômes sont complexes, nous recommandons une consultation directe'})}\n\n"
+                return
 
-    for etape in data.get("parcours", []):
-        yield f"event: etape\ndata: {json.dumps(etape, ensure_ascii=False)}\n\n"
+            hypotheses_display = [_map_hypothese(h) for h in event.get("hypotheses", [])]
+            payload = {"hypotheses": hypotheses_display, "urgence": urgence, "confidence": confidence}
+            yield f"event: hypotheses\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    financier = calculate_financier([e for e in data.get("parcours", [])])
-    yield f"event: financier\ndata: {json.dumps(financier)}\n\n"
+        elif etype == "etape":
+            remboursement = get_remboursement(
+                event.get("type_praticien", ""),
+                float(event.get("cout_estime_eur", event.get("cout_estime", 0))),
+            )
+            etape_display = _map_etape(event, remboursement)
+            etapes_display.append(etape_display)
+            yield f"event: etape\ndata: {json.dumps(etape_display, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.4)
 
-    parcours_id = str(uuid.uuid4())
-    age_range = f"{(input.age // 10) * 10}-{(input.age // 10) * 10 + 10}"
-    supabase = get_supabase()
-    supabase.table("parcours").insert({
-        "id": parcours_id,
-        "user_id": user_id,
-        "symptoms_summary": input.symptoms[:100],
-        "age_range": age_range,
-        "city": input.city,
-        "hypotheses": data.get("hypotheses", []),
-        "urgence_level": urgence,
-        "ai_confidence": confidence,
-        "etapes": data.get("parcours", []),
-        "cout_total_estime": financier["cout_total"],
-        "rac_estime": financier["rac"],
-    }).execute()
+        elif etype == "complete":
+            if etapes_display:
+                financier = {
+                    "cout_total": round(sum(e["cout_estime"] for e in etapes_display), 2),
+                    "secu": round(sum(e["remboursement_secu"] for e in etapes_display), 2),
+                    "rac": round(sum(e["cout_estime"] - e["remboursement_secu"] for e in etapes_display), 2),
+                }
+                yield f"event: financier\ndata: {json.dumps(financier)}\n\n"
 
-    logger.info(
-        "parcours_generated",
-        extra={
-            "parcours_id": parcours_id,
-            "ai_confidence": confidence,
-            "urgence_level": urgence,
-            "latency_ms": 0,
-        },
-    )
+            parcours_id = str(uuid.uuid4())
+            age_range = f"{(input.age // 10) * 10}-{(input.age // 10) * 10 + 10}"
 
-    message = data.get("message_utilisateur", "")
-    yield f"event: complete\ndata: {json.dumps({'parcours_id': parcours_id, 'message_utilisateur': message}, ensure_ascii=False)}\n\n"
+            try:
+                supabase = get_supabase()
+                supabase.table("parcours").insert({
+                    "id": parcours_id,
+                    "user_id": user_id,
+                    "symptoms_summary": input.symptoms[:100],
+                    "age_range": age_range,
+                    "city": input.city,
+                    "hypotheses": hypotheses_display,
+                    "urgence_level": urgence,
+                    "ai_confidence": confidence,
+                    "etapes": etapes_display,
+                    "cout_total_estime": financier["cout_total"] if etapes_display else 0,
+                    "rac_estime": financier["rac"] if etapes_display else 0,
+                }).execute()
+            except Exception as exc:
+                logger.error("supabase_save_error", extra={"error": str(exc)})
+
+            logger.info(
+                "parcours_generated",
+                extra={
+                    "parcours_id": parcours_id,
+                    "ai_confidence": confidence,
+                    "urgence_level": urgence,
+                },
+            )
+
+            message = event.get("message_utilisateur", "")
+            complete_payload = {"parcours_id": parcours_id, "message_utilisateur": message}
+            yield f"event: complete\ndata: {json.dumps(complete_payload, ensure_ascii=False)}\n\n"
 
 
 @router.post("/generate")
@@ -118,17 +181,18 @@ async def get_parcours(parcours_id: uuid.UUID, user: dict = Depends(verify_jwt))
         raise HTTPException(status_code=403, detail="Accès refusé")
     financier = None
     if row.get("cout_total_estime") is not None:
+        secu = row.get("cout_total_estime", 0) - row.get("rac_estime", 0)
         financier = {
             "cout_total": row["cout_total_estime"],
-            "secu": 0,
+            "secu": round(secu, 2),
             "rac": row["rac_estime"],
         }
     return ParcoursDB(
         id=row["id"],
         created_at=row["created_at"],
-        hypotheses=row["hypotheses"],
+        hypotheses=row.get("hypotheses", []),
         urgence=row["urgence_level"],
-        etapes=row["etapes"],
+        etapes=row.get("etapes", []),
         etapes_completees=row.get("etapes_completees", []),
         financier=financier,
         pdf_url=row.get("pdf_url"),

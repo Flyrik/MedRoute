@@ -33,9 +33,9 @@ class ParcoursParse(BaseModel):
 class ParcoursDB(BaseModel):
     id: uuid.UUID
     created_at: datetime
-    hypotheses: list[Hypothese]
+    hypotheses: list[dict]
     urgence: Literal["non_urgent", "urgent", "absolu"]
-    etapes: list[Etape]
+    etapes: list[dict]
     etapes_completees: list[int] = []
     financier: dict | None = None
     pdf_url: str | None = None

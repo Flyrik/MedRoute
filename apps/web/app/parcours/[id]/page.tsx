@@ -170,9 +170,13 @@ export default async function ParcoursPage({
 
         {/* Actions */}
         <div className="flex flex-col sm:flex-row gap-3">
-          <button className="flex-1 bg-[#1D9E75] text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-[#178a65] transition-colors">
+          <a
+            href={`/api/pdf/${id}`}
+            download={`parcours-${id}.pdf`}
+            className="flex-1 text-center bg-[#1D9E75] text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-[#178a65] transition-colors"
+          >
             Télécharger en PDF
-          </button>
+          </a>
           <Link
             href="/parcours/nouveau"
             className="flex-1 text-center border border-zinc-200 text-zinc-700 px-5 py-3 rounded-xl text-sm font-semibold hover:bg-zinc-50 transition-colors"

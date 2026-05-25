@@ -1,7 +1,6 @@
-import jwt
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from ..config import settings
+from ..db.supabase import get_supabase
 
 bearer_scheme = HTTPBearer()
 
@@ -9,14 +8,13 @@ bearer_scheme = HTTPBearer()
 def verify_jwt(credentials: HTTPAuthorizationCredentials = Security(bearer_scheme)) -> dict:
     token = credentials.credentials
     try:
-        payload = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            options={"verify_aud": False},
-        )
-        return payload
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expiré")
-    except jwt.InvalidTokenError:
+        supabase = get_supabase()
+        response = supabase.auth.get_user(token)
+        user = response.user
+        if not user:
+            raise HTTPException(status_code=401, detail="Token invalide")
+        return {"sub": user.id, "email": user.email}
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(status_code=401, detail="Token invalide")
